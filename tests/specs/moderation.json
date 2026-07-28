@@ -45,5 +45,17 @@
         "expect": [{ "method": "sendMessage", "payload": { "text": "Moderation action: warn. This message posted a link before the link-age threshold." } }]
       }
     ]
+  },
+  {
+    "name": "secure link setting is available without exposing its value",
+    "steps": [
+      {
+        "send": { "callback": "settings:saved-link" },
+        "expect": [
+          { "method": "answerCallbackQuery" },
+          { "method": "editMessageText", "payload": { "text": "Your secure link is stored and ready to use." } }
+        ]
+      }
+    ]
   }
 ]
