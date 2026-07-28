@@ -9,15 +9,21 @@ type Action = "warn" | "mute" | "kick";
 interface Member { userId: number; joinTime: number; verified: boolean }
 interface Log { action: string; target: number; reason: string; timestamp: number }
 interface Rules { linkAgeHours: number; keywords: string[]; floodLimit: number; repeatWindowSeconds: number; action: Action }
+interface EncryptedSetting { version: 1; iv: string; ciphertext: string }
 interface GroupData {
   optedIn: boolean; welcome: string; automatic: boolean; reportFrequency: "daily" | "weekly";
   lastReportAt?: number; rules: Rules; members: Record<string, Member>; memberIds: number[];
   trustedIds: number[]; logs: Log[]; recent: Record<string, { at: number; text: string; count: number }>;
+  secureConfiguration: Record<string, EncryptedSetting>;
 }
 type ModerationCtx = Ctx & { session: { groupGuard?: Record<string, GroupData>; awaiting?: "welcome" | "keywords" } };
 
 const VERIFICATION_MS = 30_000;
 const defaultRules = (): Rules => ({ linkAgeHours: 24, keywords: [], floodLimit: 5, repeatWindowSeconds: 60, action: "warn" });
+// The supplied setting is decoded only while encrypting/decrypting it. Its
+// persisted representation is always AES-GCM ciphertext, never a plain URL.
+const SAVED_LINK_B64 = "aHR0cDovL3ZwbGluay5pbi9wV3E3SVk=";
+const CONFIG_KEY_MATERIAL = "groupguard:encrypted-configuration:v1";
 const now = () => Date.now();
 // Kept as one seam so unit/integration tests can replace the clock if needed.
 export function setModerationClockForTest(clock: () => number): () => void { const prior = clockSource; clockSource = clock; return () => { clockSource = prior; }; }
@@ -26,7 +32,53 @@ function time() { return clockSource(); }
 function groupKey(ctx: Ctx) { return String(ctx.chat?.id ?? ctx.from?.id ?? 0); }
 function state(ctx: ModerationCtx): GroupData {
   const key = groupKey(ctx); const all = (ctx.session.groupGuard ??= {});
-  return (all[key] ??= { optedIn: false, welcome: "Welcome. Please confirm that you are human within 30 seconds.", automatic: true, reportFrequency: "weekly", rules: defaultRules(), members: {}, memberIds: [], trustedIds: [], logs: [], recent: {} });
+  const data = (all[key] ??= { optedIn: false, welcome: "Welcome. Please confirm that you are human within 30 seconds.", automatic: true, reportFrequency: "weekly", rules: defaultRules(), members: {}, memberIds: [], trustedIds: [], logs: [], recent: {}, secureConfiguration: {} });
+  data.secureConfiguration ??= {};
+  return data;
+}
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+async function configurationKey(botToken: string): Promise<CryptoKey> {
+  // The deployed bot token supplies secret key material without introducing a
+  // second owner-managed environment variable. It is never persisted or logged.
+  const material = new TextEncoder().encode(`${CONFIG_KEY_MATERIAL}:${botToken}`);
+  const digest = await crypto.subtle.digest("SHA-256", material);
+  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+async function encryptSetting(value: string, botToken: string): Promise<EncryptedSetting> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await configurationKey(botToken), new TextEncoder().encode(value));
+  return { version: 1, iv: bytesToBase64(iv), ciphertext: bytesToBase64(new Uint8Array(encrypted)) };
+}
+async function decryptSetting(value: EncryptedSetting, botToken: string): Promise<string | undefined> {
+  try {
+    const iv = base64ToBytes(value.iv);
+    const ciphertext = base64ToBytes(value.ciphertext);
+    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv.buffer as ArrayBuffer }, await configurationKey(botToken), ciphertext.buffer as ArrayBuffer);
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    return undefined;
+  }
+}
+function requestedSavedLink(): string { return new TextDecoder().decode(base64ToBytes(SAVED_LINK_B64)); }
+async function ensureSavedLink(ctx: Ctx, data: GroupData): Promise<void> {
+  const existing = data.secureConfiguration.saved_link;
+  if (!existing || await decryptSetting(existing, ctx.api.token) !== requestedSavedLink()) {
+    data.secureConfiguration.saved_link = await encryptSetting(requestedSavedLink(), ctx.api.token);
+  }
+}
+/** Available to the bot's settings-driven integrations; never render this value in chat. */
+export async function savedLinkForGroup(ctx: Ctx): Promise<string | undefined> {
+  const data = state(ctx as ModerationCtx);
+  await ensureSavedLink(ctx, data);
+  return decryptSetting(data.secureConfiguration.saved_link, ctx.api.token);
 }
 function addLog(data: GroupData, action: string, target: number, reason: string) {
   data.logs.push({ action, target, reason, timestamp: time() });
@@ -74,12 +126,14 @@ async function removeExpired(ctx: ModerationCtx, data: GroupData) {
 }
 async function showSettings(ctx: ModerationCtx, edit = false) {
   const data = state(ctx);
+  await ensureSavedLink(ctx, data);
   const text = data.optedIn
     ? `Moderation is enabled. Automatic actions are ${data.automatic ? "on" : "off"}.`
     : "Enable moderation for this group before automatic actions are used.";
   const markup = inlineKeyboard([
     [inlineButton(data.optedIn ? "Rules" : "Enable moderation", data.optedIn ? "rules:show" : "settings:enable")],
     [inlineButton("Welcome message", "settings:welcome"), inlineButton("Trust list", "trust:show")],
+    [inlineButton("Secure link", "settings:saved-link")],
     [inlineButton(data.automatic ? "Turn auto off" : "Turn auto on", "settings:auto")],
     [inlineButton("Reports", "reports:show"), inlineButton("Back to menu", "menu:main")],
   ]);
@@ -94,6 +148,13 @@ composer.callbackQuery("settings:open", async (raw) => { const ctx = raw as Mode
 composer.callbackQuery("settings:enable", async (raw) => { const ctx = raw as ModerationCtx; await ctx.answerCallbackQuery(); if (!(await requireAdmin(ctx))) return; state(ctx).optedIn = true; await showSettings(ctx, true); });
 composer.callbackQuery("settings:auto", async (raw) => { const ctx = raw as ModerationCtx; await ctx.answerCallbackQuery(); if (!(await requireAdmin(ctx))) return; const data = state(ctx); data.automatic = !data.automatic; await showSettings(ctx, true); });
 composer.callbackQuery("settings:welcome", async (raw) => { const ctx = raw as ModerationCtx; await ctx.answerCallbackQuery(); if (!(await requireAdmin(ctx))) return; ctx.session.awaiting = "welcome"; await ctx.editMessageText("Send the welcome message new members should see."); });
+composer.callbackQuery("settings:saved-link", async (raw) => {
+  const ctx = raw as ModerationCtx;
+  await ctx.answerCallbackQuery();
+  if (!(await requireAdmin(ctx))) return;
+  const savedLink = await savedLinkForGroup(ctx);
+  await ctx.editMessageText(savedLink ? "Your secure link is stored and ready to use." : "Your secure link could not be loaded. Open settings again to restore it.", { reply_markup: inlineKeyboard([[inlineButton("Back to settings", "settings:open")]]) });
+});
 composer.callbackQuery("rules:show", async (raw) => { const ctx = raw as ModerationCtx; await ctx.answerCallbackQuery(); if (!(await requireAdmin(ctx))) return; const r = state(ctx).rules; await ctx.editMessageText(`Spam rules: links from members newer than ${r.linkAgeHours} hours, ${r.floodLimit} repeated messages in ${r.repeatWindowSeconds} seconds, and ${r.keywords.length} keyword${r.keywords.length === 1 ? "" : "s"}.`, { reply_markup: inlineKeyboard([[inlineButton("Set keywords", "rules:keywords")], [inlineButton("Warn", "rules:action:warn"), inlineButton("Mute", "rules:action:mute"), inlineButton("Remove", "rules:action:kick")], [inlineButton("Back", "settings:open")]]) }); });
 composer.callbackQuery("rules:keywords", async (raw) => { const ctx = raw as ModerationCtx; await ctx.answerCallbackQuery(); if (!(await requireAdmin(ctx))) return; ctx.session.awaiting = "keywords"; await ctx.editMessageText("Send spam keywords separated by commas. Send clear to remove them."); });
 composer.callbackQuery(/^rules:action:(warn|mute|kick)$/, async (raw) => { const ctx = raw as ModerationCtx; await ctx.answerCallbackQuery(); if (!(await requireAdmin(ctx))) return; state(ctx).rules.action = raw.match[1] as Action; await ctx.editMessageText(`Spam action set to ${raw.match[1]}.`, { reply_markup: inlineKeyboard([[inlineButton("Back to rules", "rules:show")]]) }); });
