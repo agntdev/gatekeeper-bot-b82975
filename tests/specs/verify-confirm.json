@@ -5,9 +5,9 @@
       {
         "expect": [
           {
-            "method": "sendMessage",
+            "method": "editMessageText",
             "payload": {
-              "text": "Verify new member identity"
+              "text": "Your verification has already been recorded."
             }
           }
         ],

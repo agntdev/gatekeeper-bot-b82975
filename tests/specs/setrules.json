@@ -7,7 +7,7 @@
           {
             "method": "sendMessage",
             "payload": {
-              "text": "Configure spam detection rules"
+              "text": "Open Spam rules from the menu to set keywords and the moderation action."
             }
           }
         ],

@@ -1,0 +1,49 @@
+[
+  {
+    "name": "new members receive a verification button",
+    "steps": [
+      {
+        "send": { "update": { "update_id": 1, "message": { "message_id": 1, "date": 0, "chat": { "id": -100, "type": "supergroup", "title": "Group" }, "from": { "id": 9, "is_bot": false, "first_name": "Admin" }, "new_chat_members": [{ "id": 2, "is_bot": false, "first_name": "New member" }] } } },
+        "expect": [{ "method": "sendMessage", "payload": { "text": "Welcome. Please confirm that you are human within 30 seconds.", "reply_markup": { "inline_keyboard": [[{ "text": "I am human", "callback_data": "verify:confirm" }]] } } }]
+      },
+      {
+        "send": { "callback": "verify:confirm", "chatId": -100, "userId": 2 },
+        "expect": [{ "method": "answerCallbackQuery" }, { "method": "editMessageText", "payload": { "text": "You’re verified. You can take part in the group." } }]
+      }
+    ]
+  },
+  {
+    "name": "expired unverified members are removed transparently",
+    "steps": [
+      {
+        "send": { "update": { "update_id": 1, "message": { "message_id": 1, "date": 1, "chat": { "id": -101, "type": "supergroup", "title": "Group" }, "from": { "id": 9, "is_bot": false, "first_name": "Admin" }, "new_chat_members": [{ "id": 3, "is_bot": false, "first_name": "New member" }] } } },
+        "expect": [{ "method": "sendMessage", "payload": { "text": "Welcome. Please confirm that you are human within 30 seconds." } }]
+      },
+      {
+        "send": { "update": { "update_id": 2, "message": { "message_id": 2, "date": 2, "chat": { "id": -101, "type": "supergroup", "title": "Group" }, "from": { "id": 9, "is_bot": false, "first_name": "Admin" }, "text": "check" } } },
+        "expect": [{ "method": "banChatMember", "payload": { "user_id": 3 } }, { "method": "sendMessage", "payload": { "text": "A new member was removed because verification was not completed within 30 seconds." } }]
+      }
+    ]
+  },
+  {
+    "name": "a new member posting a link receives a transparent spam warning",
+    "steps": [
+      {
+        "send": { "update": { "update_id": 1, "message": { "message_id": 1, "date": 0, "chat": { "id": -102, "type": "supergroup", "title": "Group" }, "from": { "id": 9, "is_bot": false, "first_name": "Admin" }, "new_chat_members": [{ "id": 4, "is_bot": false, "first_name": "New member" }] } } },
+        "expect": [{ "method": "sendMessage" }]
+      },
+      {
+        "send": { "callback": "settings:open", "chatId": -102, "userId": 9 },
+        "expect": [{ "method": "editMessageText" }]
+      },
+      {
+        "send": { "callback": "settings:enable", "chatId": -102, "userId": 9 },
+        "expect": [{ "method": "editMessageText", "payload": { "text": "Moderation is enabled. Automatic actions are on." } }]
+      },
+      {
+        "send": { "update": { "update_id": 4, "message": { "message_id": 4, "date": 0, "chat": { "id": -102, "type": "supergroup", "title": "Group" }, "from": { "id": 4, "is_bot": false, "first_name": "New member" }, "text": "https://example.com" } } },
+        "expect": [{ "method": "sendMessage", "payload": { "text": "Moderation action: warn. This message posted a link before the link-age threshold." } }]
+      }
+    ]
+  }
+]

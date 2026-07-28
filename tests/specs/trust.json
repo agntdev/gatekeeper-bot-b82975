@@ -7,7 +7,7 @@
           {
             "method": "sendMessage",
             "payload": {
-              "text": "Add user to trust list"
+              "text": "Reply to a member’s message with /trust to add them to the trust list."
             }
           }
         ],

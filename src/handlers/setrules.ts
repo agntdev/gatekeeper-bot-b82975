@@ -1,15 +1,14 @@
 import { Composer } from "grammy";
+import type { Ctx } from "../bot.js";
+import { inlineButton, inlineKeyboard, registerMainMenuItem } from "../toolkit/index.js";
 
-// SCAFFOLD — generated from the bot blueprint BEFORE the agent runs.
-// Keep a LIVE registration (.command / .callbackQuery / …) so this feature is
-// never an empty stub. Replace the reply body with real logic + copy; if you
-// change the user-facing text, update tests/specs to match EXACTLY.
-// Do NOT rewrite src/bot.ts — buildBot() already auto-loads this module.
-
-const composer = new Composer();
+registerMainMenuItem({ label: "Spam rules", data: "setrules:open", order: 11 });
+const composer = new Composer<Ctx>();
 
 composer.command("setrules", async (ctx) => {
-  await ctx.reply("Configure spam detection rules");
+  await ctx.reply("Open Spam rules from the menu to set keywords and the moderation action.", { reply_markup: inlineKeyboard([[inlineButton("Open spam rules", "settings:open")]]) });
 });
+
+composer.callbackQuery("setrules:open", async (ctx) => { await ctx.answerCallbackQuery(); await ctx.editMessageText("Open Moderation settings to configure spam rules.", { reply_markup: inlineKeyboard([[inlineButton("Open settings", "settings:open")]]) }); });
 
 export default composer;

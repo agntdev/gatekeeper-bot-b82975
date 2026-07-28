@@ -1,15 +1,19 @@
 import { Composer } from "grammy";
+import type { Ctx } from "../bot.js";
+import { inlineButton, inlineKeyboard } from "../toolkit/index.js";
+import { trustRepliedMember, trustedMemberCount } from "./moderation.js";
 
-// SCAFFOLD — generated from the bot blueprint BEFORE the agent runs.
-// Keep a LIVE registration (.command / .callbackQuery / …) so this feature is
-// never an empty stub. Replace the reply body with real logic + copy; if you
-// change the user-facing text, update tests/specs to match EXACTLY.
-// Do NOT rewrite src/bot.ts — buildBot() already auto-loads this module.
-
-const composer = new Composer();
+const composer = new Composer<Ctx>();
 
 composer.command("trust", async (ctx) => {
-  await ctx.reply("Add user to trust list");
+  if (!trustRepliedMember(ctx)) { await ctx.reply("Reply to a member’s message with /trust to add them to the trust list."); return; }
+  await ctx.reply("That member is now trusted.");
+});
+
+composer.callbackQuery("trust:show", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const count = trustedMemberCount(ctx);
+  await ctx.editMessageText(count === 0 ? "No trusted members yet — reply to a member with /trust to add one." : `${count} trusted member${count === 1 ? " is" : "s are"} excluded from automatic moderation.`, { reply_markup: inlineKeyboard([[inlineButton("Back to settings", "settings:open")]]) });
 });
 
 export default composer;
